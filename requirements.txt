@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+faster-whisper==1.1.1
+numpy>=1.24.4,<2
+protobuf>=4.25.1,<6
+pymongo==4.10.1
+certifi>=2024.8.30
