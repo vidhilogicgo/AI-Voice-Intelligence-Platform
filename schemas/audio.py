@@ -51,6 +51,7 @@ class UploadResponse(BaseModel):
 class StatusResponse(BaseModel):
     audio_id: str
     status: ProcessingStatus
+    state: str | None = None
 
 
 class ResultResponse(BaseModel):

@@ -89,6 +89,7 @@ async def get_processing_status(id: str) -> ApiResponse[StatusResponse]:
         data=StatusResponse(
             audio_id=job.id,
             status=job.status,
+            state=job.stage,
         ),
     )
 

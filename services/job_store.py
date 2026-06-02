@@ -94,6 +94,7 @@ class MongoJobStore(InMemoryJobStore):
                 },
                 "$set": {
                     "status": job.status.value,
+                    "state": job.stage,
                     "error": job.error,
                     "updated_at": now,
                 },
@@ -119,6 +120,7 @@ class MongoJobStore(InMemoryJobStore):
                 audio_document.get("status", ProcessingStatus.pending.value)
             ),
             message=None,
+            stage=audio_document.get("state") or audio_document.get("stage"),
             error=audio_document.get("error"),
             result=self._load_result(audio_id),
         )
@@ -127,17 +129,21 @@ class MongoJobStore(InMemoryJobStore):
     def update(self, job: AudioJob) -> AudioJob:
         super().update(job)
         now = _utc_now()
+        update_document: dict[str, Any] = {
+            "$setOnInsert": {
+                "_id": job.id,
+                "audio_id": job.id,
+                "file_type": job.file_path.suffix.lower().lstrip("."),
+                "created_at": now,
+            },
+            "$set": _audio_file_status_fields(job, now),
+        }
+        if job.status == ProcessingStatus.processing:
+            update_document["$min"] = {"started_at": now}
+
         self._db.audio_files.update_one(
             {"_id": job.id},
-            {
-                "$setOnInsert": {
-                    "_id": job.id,
-                    "audio_id": job.id,
-                    "file_type": job.file_path.suffix.lower().lstrip("."),
-                    "created_at": now,
-                },
-                "$set": _audio_file_status_fields(job, now),
-            },
+            update_document,
             upsert=True,
         )
         if job.result is not None:
@@ -177,6 +183,8 @@ class MongoJobStore(InMemoryJobStore):
                 "details": details or {},
                 "created_at": _utc_now(),
             }
+            if stage:
+                document["event"] = stage
             if status == "failure" and message:
                 document["error"] = message
 
@@ -364,11 +372,10 @@ def _audio_file_status_fields(job: AudioJob, now: datetime) -> dict[str, Any]:
     fields: dict[str, Any] = {
         "filename": job.filename,
         "status": job.status.value,
+        "state": job.stage,
         "error": job.error,
         "updated_at": now,
     }
-    if job.status == ProcessingStatus.processing:
-        fields["started_at"] = now
     if job.status in {ProcessingStatus.completed, ProcessingStatus.failed}:
         fields["completed_at"] = now
     return fields
