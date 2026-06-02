@@ -37,57 +37,50 @@ class Settings:
     qa_chunk_max_chars: int = 1800
     qa_chunk_overlap_segments: int = 1
     qa_retrieval_top_k: int = 4
+    qa_retrieval_engine: str = "faiss"
+    qa_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     mongodb_uri: str | None = None
     mongodb_db_name: str = "ai_voice_intelligence"
 
 
 def get_settings() -> Settings:
     _load_env_file()
-    groq_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+    groq_model = "llama-3.1-8b-instant"
     return Settings(
-        app_name=os.getenv("APP_NAME", "AI Voice Intelligence API"),
-        debug=os.getenv("DEBUG", "false").lower() == "true",
-        upload_dir=Path(os.getenv("UPLOAD_DIR", "storage/uploads")),
-        processed_audio_dir=Path(os.getenv("PROCESSED_AUDIO_DIR", "storage/processed")),
-        max_upload_mb=int(os.getenv("MAX_UPLOAD_MB", "150")),
-        transcription_sample_rate=int(os.getenv("TRANSCRIPTION_SAMPLE_RATE", "16000")),
-        transcription_channels=int(os.getenv("TRANSCRIPTION_CHANNELS", "1")),
-        transcription_engine=os.getenv("TRANSCRIPTION_ENGINE", "faster-whisper"),
-        transcription_model=os.getenv("TRANSCRIPTION_MODEL", "base"),
-        transcription_device=os.getenv("TRANSCRIPTION_DEVICE", "cpu"),
-        transcription_compute_type=os.getenv("TRANSCRIPTION_COMPUTE_TYPE", "int8"),
-        transcription_language=_optional_env("TRANSCRIPTION_LANGUAGE"),
-        diarization_engine=os.getenv(
-            "DIARIZATION_ENGINE",
-            "pyannote" if _diarization_auth_token() else "heuristic",
-        ),
-        diarization_model=os.getenv(
-            "DIARIZATION_MODEL",
-            "pyannote/speaker-diarization-3.1",
-        ),
+        app_name="AI Voice Intelligence API",
+        debug=False,
+        upload_dir=Path("storage/uploads"),
+        processed_audio_dir=Path("storage/processed"),
+        max_upload_mb=150,
+        transcription_sample_rate=16000,
+        transcription_channels=1,
+        transcription_engine="faster-whisper",
+        transcription_model="base",
+        transcription_device="cpu",
+        transcription_compute_type="int8",
+        transcription_language=None,
+        diarization_engine="pyannote" if _diarization_auth_token() else "heuristic",
+        diarization_model="pyannote/speaker-diarization-3.1",
         diarization_auth_token=_diarization_auth_token(),
-        diarization_default_speakers=int(os.getenv("DIARIZATION_DEFAULT_SPEAKERS", "2")),
-        diarization_min_speakers=int(os.getenv("DIARIZATION_MIN_SPEAKERS", "1")),
-        diarization_max_speakers=int(os.getenv("DIARIZATION_MAX_SPEAKERS", "10")),
-        diarization_clustering_threshold=float(os.getenv("DIARIZATION_CLUSTERING_THRESHOLD", "0.7")),
-        cors_origins=_read_cors_origins(),
+        diarization_default_speakers=2,
+        diarization_min_speakers=1,
+        diarization_max_speakers=10,
+        diarization_clustering_threshold=0.7,
+        cors_origins=["*"],
         assemblyai_api_key=os.getenv("ASSEMBLYAI_API_KEY"),
         groq_api_key=os.getenv("GROQ_API_KEY"),
         groq_model=groq_model,
-        groq_summary_model=os.getenv("GROQ_SUMMARY_MODEL", groq_model),
-        groq_insight_model=os.getenv("GROQ_INSIGHT_MODEL", groq_model),
-        groq_qa_model=os.getenv("GROQ_QA_MODEL", groq_model),
-        qa_chunk_max_chars=int(os.getenv("QA_CHUNK_MAX_CHARS", "1800")),
-        qa_chunk_overlap_segments=int(os.getenv("QA_CHUNK_OVERLAP_SEGMENTS", "1")),
-        qa_retrieval_top_k=int(os.getenv("QA_RETRIEVAL_TOP_K", "4")),
+        groq_summary_model=groq_model,
+        groq_insight_model=groq_model,
+        groq_qa_model=groq_model,
+        qa_chunk_max_chars=1800,
+        qa_chunk_overlap_segments=1,
+        qa_retrieval_top_k=4,
+        qa_retrieval_engine="faiss",
+        qa_embedding_model="sentence-transformers/all-MiniLM-L6-v2",
         mongodb_uri=_optional_env("MONGODB_URI"),
         mongodb_db_name=os.getenv("MONGODB_DB_NAME", "ai_voice_intelligence"),
     )
-
-
-def _read_cors_origins() -> list[str]:
-    raw_origins = os.getenv("CORS_ORIGINS", "*")
-    return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 
 def _optional_env(name: str) -> str | None:

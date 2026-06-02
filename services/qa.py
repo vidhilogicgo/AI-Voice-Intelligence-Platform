@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import math
 import re
+from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -19,11 +20,20 @@ MIN_RELEVANCE_SCORE = 0.05
 class TranscriptChunk:
     text: str
     segments: tuple[TranscriptSegment, ...]
-    vector: dict[str, float]
+    vector: dict[str, float] | None = None
+
+
+class TranscriptSearchStore(Protocol):
+    retrieval_model: str
+
+    def search(self, query: str, top_k: int) -> list[tuple[TranscriptChunk, float]]:
+        ...
 
 
 class TranscriptVectorStore:
     """Small local vector store for one transcript using sparse TF-IDF vectors."""
+
+    retrieval_model = "tf-idf-sparse-vector-store"
 
     def __init__(self, chunks: list[TranscriptChunk], idf: dict[str, float]) -> None:
         self.chunks = chunks
@@ -67,8 +77,111 @@ class TranscriptVectorStore:
         return sorted(scored, key=lambda item: item[1], reverse=True)[:top_k]
 
 
+class FaissTranscriptVectorStore:
+    """Local semantic vector store for one transcript using FAISS."""
+
+    _model_cache: dict[str, object] = {}
+
+    def __init__(
+        self,
+        *,
+        chunks: list[TranscriptChunk],
+        index: object,
+        embedding_model: object,
+        embedding_model_name: str,
+    ) -> None:
+        self.chunks = chunks
+        self.index = index
+        self.embedding_model = embedding_model
+        self.retrieval_model = f"faiss-{embedding_model_name}"
+
+    @classmethod
+    def from_transcript(
+        cls,
+        transcript: list[TranscriptSegment],
+        max_chars: int,
+        overlap_segments: int,
+        embedding_model_name: str,
+    ) -> "FaissTranscriptVectorStore":
+        import faiss
+        import numpy as np
+        from sentence_transformers import SentenceTransformer
+
+        chunk_segments = _chunk_transcript_segments(
+            transcript=transcript,
+            max_chars=max_chars,
+            overlap_segments=overlap_segments,
+        )
+        chunk_texts = [
+            _format_segments_for_context(segments)
+            for segments in chunk_segments
+            if segments
+        ]
+        chunks = [
+            TranscriptChunk(text=text, segments=tuple(segments))
+            for text, segments in zip(chunk_texts, chunk_segments)
+            if text.strip()
+        ]
+        if not chunks:
+            index = faiss.IndexFlatIP(1)
+            return cls(
+                chunks=[],
+                index=index,
+                embedding_model=cls._get_embedding_model(embedding_model_name),
+                embedding_model_name=embedding_model_name,
+            )
+
+        embedding_model = cls._get_embedding_model(embedding_model_name)
+        embeddings = embedding_model.encode(
+            [chunk.text for chunk in chunks],
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        embeddings = np.asarray(embeddings, dtype="float32")
+        index = faiss.IndexFlatIP(embeddings.shape[1])
+        index.add(embeddings)
+        return cls(
+            chunks=chunks,
+            index=index,
+            embedding_model=embedding_model,
+            embedding_model_name=embedding_model_name,
+        )
+
+    @classmethod
+    def _get_embedding_model(cls, embedding_model_name: str) -> object:
+        if embedding_model_name not in cls._model_cache:
+            from sentence_transformers import SentenceTransformer
+
+            cls._model_cache[embedding_model_name] = SentenceTransformer(
+                embedding_model_name
+            )
+        return cls._model_cache[embedding_model_name]
+
+    def search(self, query: str, top_k: int) -> list[tuple[TranscriptChunk, float]]:
+        if not self.chunks:
+            return []
+
+        import numpy as np
+
+        query_embedding = self.embedding_model.encode(
+            [query],
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        query_embedding = np.asarray(query_embedding, dtype="float32")
+        scores, indexes = self.index.search(query_embedding, min(top_k, len(self.chunks)))
+        matches: list[tuple[TranscriptChunk, float]] = []
+        for index, score in zip(indexes[0], scores[0]):
+            if index < 0:
+                continue
+            matches.append((self.chunks[int(index)], float(score)))
+        return matches
+
+
 class TranscriptQAService:
-    _store_cache: dict[str, TranscriptVectorStore] = {}
+    _store_cache: dict[str, TranscriptSearchStore] = {}
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
@@ -123,7 +236,7 @@ class TranscriptQAService:
             except Exception as exc:
                 log_model_fallback(
                     provider="local",
-                    model="tf-idf-retrieval-extractive-answering",
+                    model="retrieval-extractive-answering",
                     purpose="transcript question answering",
                     reason=f"Groq answer generation failed unexpectedly: {exc}",
                 )
@@ -131,7 +244,7 @@ class TranscriptQAService:
         if answer is None:
             log_model_usage(
                 provider="local",
-                model="tf-idf-retrieval-extractive-answering",
+                model=f"{store.retrieval_model}-extractive-answering",
                 purpose="transcript question answering",
                 mode="fallback",
                 details=f"audio_id={audio_id} sources={len(sources)}",
@@ -149,22 +262,58 @@ class TranscriptQAService:
         self,
         audio_id: str,
         transcript: list[TranscriptSegment],
-    ) -> TranscriptVectorStore:
+    ) -> TranscriptSearchStore:
         signature = _transcript_signature(transcript)
-        cache_key = f"{audio_id}:{signature}"
+        cache_key = (
+            f"{audio_id}:{signature}:"
+            f"{self.settings.qa_retrieval_engine}:"
+            f"{self.settings.qa_embedding_model}"
+        )
         if cache_key not in self._store_cache:
-            log_model_usage(
-                provider="local",
-                model="tf-idf-sparse-vector-store",
-                purpose="transcript retrieval index",
-                details=f"audio_id={audio_id} segments={len(transcript)}",
-            )
-            self._store_cache[cache_key] = TranscriptVectorStore.from_transcript(
-                transcript=transcript,
-                max_chars=max(500, self.settings.qa_chunk_max_chars),
-                overlap_segments=max(0, self.settings.qa_chunk_overlap_segments),
-            )
+            self._store_cache[cache_key] = self._build_store(audio_id, transcript)
         return self._store_cache[cache_key]
+
+    def _build_store(
+        self,
+        audio_id: str,
+        transcript: list[TranscriptSegment],
+    ) -> TranscriptSearchStore:
+        max_chars = max(500, self.settings.qa_chunk_max_chars)
+        overlap_segments = max(0, self.settings.qa_chunk_overlap_segments)
+        if self.settings.qa_retrieval_engine.strip().lower() == "faiss":
+            try:
+                store = FaissTranscriptVectorStore.from_transcript(
+                    transcript=transcript,
+                    max_chars=max_chars,
+                    overlap_segments=overlap_segments,
+                    embedding_model_name=self.settings.qa_embedding_model,
+                )
+                log_model_usage(
+                    provider="local",
+                    model=store.retrieval_model,
+                    purpose="transcript semantic retrieval index",
+                    details=f"audio_id={audio_id} segments={len(transcript)}",
+                )
+                return store
+            except Exception as exc:
+                log_model_fallback(
+                    provider="local",
+                    model="tf-idf-sparse-vector-store",
+                    purpose="transcript retrieval index",
+                    reason=f"FAISS retrieval unavailable: {exc}",
+                )
+
+        log_model_usage(
+            provider="local",
+            model="tf-idf-sparse-vector-store",
+            purpose="transcript retrieval index",
+            details=f"audio_id={audio_id} segments={len(transcript)}",
+        )
+        return TranscriptVectorStore.from_transcript(
+            transcript=transcript,
+            max_chars=max_chars,
+            overlap_segments=overlap_segments,
+        )
 
     def _answer_with_groq(
         self,
@@ -225,7 +374,7 @@ class TranscriptQAService:
         except HTTPError as exc:
             log_model_fallback(
                 provider="local",
-                model="tf-idf-retrieval-extractive-answering",
+                model="retrieval-extractive-answering",
                 purpose="transcript question answering",
                 reason=f"Groq HTTP {exc.code}: {_compact_error_body(exc)}",
             )
@@ -233,7 +382,7 @@ class TranscriptQAService:
         except (URLError, TimeoutError) as exc:
             log_model_fallback(
                 provider="local",
-                model="tf-idf-retrieval-extractive-answering",
+                model="retrieval-extractive-answering",
                 purpose="transcript question answering",
                 reason=f"Groq request failed: {exc}",
             )
@@ -241,7 +390,7 @@ class TranscriptQAService:
         except json.JSONDecodeError:
             log_model_fallback(
                 provider="local",
-                model="tf-idf-retrieval-extractive-answering",
+                model="retrieval-extractive-answering",
                 purpose="transcript question answering",
                 reason="Groq returned invalid JSON",
             )
@@ -251,7 +400,7 @@ class TranscriptQAService:
         if not isinstance(choices, list) or not choices:
             log_model_fallback(
                 provider="local",
-                model="tf-idf-retrieval-extractive-answering",
+                model="retrieval-extractive-answering",
                 purpose="transcript question answering",
                 reason="Groq response did not include choices",
             )
