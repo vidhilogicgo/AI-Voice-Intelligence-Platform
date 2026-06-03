@@ -2,6 +2,14 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 
+ALLOWED_ENV_KEYS = {
+    "ASSEMBLYAI_API_KEY",
+    "GROQ_API_KEY",
+    "HF_TOKEN",
+    "MONGODB_DB_NAME",
+    "MONGODB_URI",
+}
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -46,6 +54,7 @@ class Settings:
 def get_settings() -> Settings:
     _load_env_file()
     groq_model = "llama-3.1-8b-instant"
+    diarization_auth_token = _optional_env("HF_TOKEN")
     return Settings(
         app_name="AI Voice Intelligence API",
         debug=False,
@@ -59,16 +68,16 @@ def get_settings() -> Settings:
         transcription_device="cpu",
         transcription_compute_type="int8",
         transcription_language=None,
-        diarization_engine="pyannote" if _diarization_auth_token() else "heuristic",
+        diarization_engine="pyannote" if diarization_auth_token else "heuristic",
         diarization_model="pyannote/speaker-diarization-3.1",
-        diarization_auth_token=_diarization_auth_token(),
+        diarization_auth_token=diarization_auth_token,
         diarization_default_speakers=2,
         diarization_min_speakers=1,
         diarization_max_speakers=10,
         diarization_clustering_threshold=0.7,
         cors_origins=["*"],
-        assemblyai_api_key=os.getenv("ASSEMBLYAI_API_KEY"),
-        groq_api_key=os.getenv("GROQ_API_KEY"),
+        assemblyai_api_key=_optional_env("ASSEMBLYAI_API_KEY"),
+        groq_api_key=_optional_env("GROQ_API_KEY"),
         groq_model=groq_model,
         groq_summary_model=groq_model,
         groq_insight_model=groq_model,
@@ -79,7 +88,7 @@ def get_settings() -> Settings:
         qa_retrieval_engine="faiss",
         qa_embedding_model="sentence-transformers/all-MiniLM-L6-v2",
         mongodb_uri=_optional_env("MONGODB_URI"),
-        mongodb_db_name=os.getenv("MONGODB_DB_NAME", "ai_voice_intelligence"),
+        mongodb_db_name=_optional_env("MONGODB_DB_NAME") or "ai_voice_intelligence",
     )
 
 
@@ -88,14 +97,6 @@ def _optional_env(name: str) -> str | None:
     if value is None or not value.strip():
         return None
     return value.strip()
-
-
-def _diarization_auth_token() -> str | None:
-    return (
-        _optional_env("HUGGINGFACE_TOKEN")
-        or _optional_env("HF_TOKEN")
-        or _optional_env("PYANNOTE_AUTH_TOKEN")
-    )
 
 
 def _load_env_file() -> None:
@@ -110,5 +111,7 @@ def _load_env_file() -> None:
 
         key, value = stripped_line.split("=", 1)
         key = key.strip()
+        if key not in ALLOWED_ENV_KEYS:
+            continue
         value = value.strip().strip('"').strip("'")
         os.environ.setdefault(key, value)

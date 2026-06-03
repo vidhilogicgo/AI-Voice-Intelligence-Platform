@@ -163,7 +163,7 @@ class SpeakerDiarizationService:
         if self._pipeline is None:
             if not self.settings.diarization_auth_token:
                 raise AppError(
-                    "Pyannote diarization requires HUGGINGFACE_TOKEN, HF_TOKEN, or PYANNOTE_AUTH_TOKEN to be set.",
+                    "Pyannote diarization requires HF_TOKEN to be set.",
                     code="diarization_auth_missing",
                 )
             

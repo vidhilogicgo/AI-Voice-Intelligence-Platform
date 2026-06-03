@@ -85,7 +85,7 @@ The application reads only a specific set of credentials and connection URIs fro
 | `MONGODB_DB_NAME` | Recommended | Database name, default `ai_voice_intelligence`. |
 | `GROQ_API_KEY` | Recommended | Groq API key for summary, insight, and Q&A generation. |
 | `ASSEMBLYAI_API_KEY` | Optional | Approved speech-to-text API key. If present, cloud transcription and diarization are used. |
-| `HF_TOKEN` / `HUGGINGFACE_TOKEN` | Required for pyannote | Token for Hugging Face to access the gated pyannote speaker diarization models. |
+| `HF_TOKEN` | Required for pyannote | Token for Hugging Face to access the gated pyannote speaker diarization models. |
 
 Example `.env` file:
 
