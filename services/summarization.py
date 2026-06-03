@@ -40,6 +40,7 @@ class SummarizationService:
             try:
                 llm_summary = await self._summarize_with_groq(transcript)
             except GroqSummarizationError as exc:
+                print(f"❌ [SUMMARIZATION] Groq summary model ({self.settings.groq_summary_model}) failed: {exc}. 📍 Fallback: using local extractive frequency model.")
                 log_model_fallback(
                     provider="local",
                     model="extractive-frequency",
@@ -48,7 +49,9 @@ class SummarizationService:
                 )
                 return self._summarize_extractively(transcript)
             if llm_summary is not None:
+                print(f"✅ [SUMMARIZATION] Groq summary model ({self.settings.groq_summary_model}) succeeded.")
                 return llm_summary
+            print(f"❌ [SUMMARIZATION] Groq summary model ({self.settings.groq_summary_model}) returned no parseable summary. 📍 Fallback: using local extractive frequency model.")
             log_model_fallback(
                 provider="local",
                 model="extractive-frequency",
@@ -57,6 +60,7 @@ class SummarizationService:
             )
             return self._summarize_extractively(transcript)
 
+        print("📍 [SUMMARIZATION] Groq API key not configured. Fallback: using local extractive frequency model.")
         log_model_usage(
             provider="local",
             model="extractive-frequency",

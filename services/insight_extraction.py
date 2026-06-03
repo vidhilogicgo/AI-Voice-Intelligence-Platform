@@ -36,6 +36,7 @@ class InsightExtractionService:
             try:
                 insights = await asyncio.to_thread(self._extract_with_groq, transcript)
             except GroqInsightError as exc:
+                print(f"❌ [INSIGHT_EXTRACTION] Groq insights model ({self.settings.groq_insight_model}) failed: {exc}. 📍 Fallback: using local extractive keyword model.")
                 log_model_fallback(
                     provider="local",
                     model="extractive-keyword-insights",
@@ -44,7 +45,9 @@ class InsightExtractionService:
                 )
                 return _extract_fallback_insights(transcript)
             if insights is not None:
+                print(f"✅ [INSIGHT_EXTRACTION] Groq insights model ({self.settings.groq_insight_model}) succeeded.")
                 return insights
+            print(f"❌ [INSIGHT_EXTRACTION] Groq insights model ({self.settings.groq_insight_model}) returned no parseable insights. 📍 Fallback: using local extractive keyword model.")
             log_model_fallback(
                 provider="local",
                 model="extractive-keyword-insights",
@@ -53,6 +56,7 @@ class InsightExtractionService:
             )
             return _extract_fallback_insights(transcript)
 
+        print("📍 [INSIGHT_EXTRACTION] Groq API key not configured. Fallback: using local extractive keyword model.")
         log_model_usage(
             provider="local",
             model="extractive-keyword-insights",

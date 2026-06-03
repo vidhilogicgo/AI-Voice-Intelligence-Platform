@@ -69,13 +69,16 @@ class TranscriptionService:
                 ),
             )
             try:
-                return await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     self._transcribe_with_faster_whisper,
                     audio_path,
                 )
-            except AppError:
-                raise
+                print(f"✅ [TRANSCRIPTION] Local faster-whisper ({self.settings.transcription_model}) transcription succeeded.")
+                return result
             except Exception as exc:
+                print(f"❌ [TRANSCRIPTION] Local faster-whisper ({self.settings.transcription_model}) transcription failed: {exc}")
+                if isinstance(exc, AppError):
+                    raise
                 raise AppError(
                     "Local transcription failed. Check the audio file and transcription settings.",
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -89,13 +92,16 @@ class TranscriptionService:
                 details=f"engine=openai-whisper device={self.settings.transcription_device}",
             )
             try:
-                return await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     self._transcribe_with_openai_whisper,
                     audio_path,
                 )
-            except AppError:
-                raise
+                print(f"✅ [TRANSCRIPTION] Local openai-whisper ({self.settings.transcription_model}) transcription succeeded.")
+                return result
             except Exception as exc:
+                print(f"❌ [TRANSCRIPTION] Local openai-whisper ({self.settings.transcription_model}) transcription failed: {exc}")
+                if isinstance(exc, AppError):
+                    raise
                 raise AppError(
                     "Local transcription failed. Check the audio file and transcription settings.",
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

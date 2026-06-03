@@ -37,6 +37,7 @@ class VoiceIntelligencePipeline:
                 stage="audio_preprocessing",
                 message="Audio preprocessing completed.",
             )
+            print("✅ [PREPROCESSING] Audio preprocessing model/tool (FFmpeg) succeeded.")
 
             _set_processing_stage(job, "transcription", "Transcribing audio.")
             timestamped_transcript = await self.transcription.transcribe(processed_path)
@@ -85,7 +86,9 @@ class VoiceIntelligencePipeline:
             job.stage = "completed"
             job.message = "Audio analysis completed."
             job.error = None
+            print("🎉 [PIPELINE] Entire audio processing pipeline completed successfully!")
         except AppError as exc:
+            print(f"❌ [{job.stage.upper() if job.stage else 'PIPELINE'}] Step failed: {exc.message}")
             _mark_failed(
                 job,
                 stage=job.stage or "processing",
@@ -97,6 +100,7 @@ class VoiceIntelligencePipeline:
                 },
             )
         except Exception as exc:
+            print(f"❌ [{job.stage.upper() if job.stage else 'PIPELINE'}] Step failed with unexpected error: {exc}")
             _mark_failed(
                 job,
                 stage=job.stage or "processing",

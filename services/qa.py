@@ -241,7 +241,14 @@ class TranscriptQAService:
                     reason=f"Groq answer generation failed unexpectedly: {exc}",
                 )
 
-        if answer is None:
+        if answer is not None:
+            print(f"✅ [QA] Groq QA model ({self.settings.groq_qa_model}) succeeded.")
+        else:
+            if self.settings.groq_api_key:
+                print(f"❌ [QA] Groq QA model ({self.settings.groq_qa_model}) failed. 📍 Fallback: using local {store.retrieval_model}-extractive answering.")
+            else:
+                print(f"📍 [QA] Groq API key not configured. Fallback: using local {store.retrieval_model}-extractive answering.")
+            
             log_model_usage(
                 provider="local",
                 model=f"{store.retrieval_model}-extractive-answering",

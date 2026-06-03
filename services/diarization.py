@@ -1,7 +1,10 @@
 import asyncio
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from core.config import Settings
 from core.errors import AppError
@@ -80,12 +83,13 @@ class SpeakerDiarizationService:
                 purpose="speaker diarization",
                 details=f"segments={len(transcript)} speakers={len(unique_speakers)}",
             )
+            print("✅ [DIARIZATION] Reused existing speaker labels from AssemblyAI successfully.")
             return _renumber_segments(_merge_consecutive_speaker_segments(transcript))
 
         # Only try pyannote if Assembly AI found NO speakers (API failure or no speech)
         engine = self.settings.diarization_engine.strip().lower()
         if engine == "pyannote" and audio_path is not None:
-            print(f"🔊 [DIARIZATION] Assembly AI detected no speakers. Attempting Pyannote diarization ({self.settings.diarization_model})...")
+            print(f"🔊 [DIARIZATION] Attempting Pyannote diarization ({self.settings.diarization_model})...")
             log_model_usage(
                 provider="Hugging Face",
                 model=self.settings.diarization_model,
@@ -94,10 +98,10 @@ class SpeakerDiarizationService:
             )
             diarized = await self._try_pyannote_diarization(transcript, audio_path)
             if diarized:
-                print("✅ [DIARIZATION] Pyannote diarization completed successfully!")
+                print(f"✅ [DIARIZATION] Pyannote speaker diarization model ({self.settings.diarization_model}) succeeded.")
                 return diarized
             # Fall back to heuristic if pyannote also fails
-            print("⚠️  [DIARIZATION] Pyannote unavailable or failed, using heuristic diarization...")
+            print(f"❌ [DIARIZATION] Pyannote speaker diarization model ({self.settings.diarization_model}) failed. 📍 Fallback: using local heuristic turn-switching diarization.")
             log_model_usage(
                 provider="local",
                 model="heuristic-turn-switching",
@@ -107,7 +111,7 @@ class SpeakerDiarizationService:
             )
             return self._heuristic_diarization(transcript)
 
-        print("📊 [DIARIZATION] Assembly AI detected no speakers. Using heuristic turn-switching diarization...")
+        print("📍 [DIARIZATION] Pyannote speaker diarization not configured or unavailable. Fallback: using local heuristic turn-switching diarization.")
         log_model_usage(
             provider="local",
             model="heuristic-turn-switching",
@@ -283,9 +287,11 @@ class SpeakerDiarizationService:
             if "auth" in exc.code.lower() or "token" in exc.message.lower():
                 raise
             # Otherwise, return None to fall back to heuristic diarization
+            logger.warning(f"Pyannote diarization failed: {exc}")
             return None
         except Exception as exc:
             # Log the error but return None to fall back to heuristic
+            logger.exception("Pyannote diarization failed with unexpected error:")
             return None
 
     def _diarize_with_pyannote(
