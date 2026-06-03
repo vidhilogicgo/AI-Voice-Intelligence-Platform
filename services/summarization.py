@@ -12,6 +12,14 @@ from schemas.audio import Summary, TranscriptSegment
 GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions"
 MAX_SUMMARY_CHUNK_CHARS = 12000
 MAX_KEY_POINTS = 8
+SUMMARY_JSON_EXAMPLE = (
+    '{"short":"...","detailed":"...","key_points":["..."]}'
+)
+EMPTY_SUMMARY_JSON = (
+    '{"short":"No clear content captured",'
+    '"detailed":"The transcript did not contain coherent discussion",'
+    '"key_points":[]}'
+)
 
 
 class GroqSummarizationError(Exception):
@@ -104,12 +112,18 @@ class SummarizationService:
         payload = {
             "model": self.settings.groq_summary_model,
             "temperature": 0.2,
+            "response_format": {"type": "json_object"},
             "messages": [
                 {
                     "role": "system",
                     "content": (
                         "You are an expert call transcript analyst. Your job is to summarize call transcripts accurately "
                         "based on their actual content and context. "
+                        "You must return one valid JSON object and nothing else. Do not use markdown, code fences, "
+                        "comments, prose before the JSON, or prose after the JSON. "
+                        f"The JSON object must match this exact shape: {SUMMARY_JSON_EXAMPLE}. "
+                        "Required fields: short as a non-empty string, detailed as a non-empty string, "
+                        "and key_points as an array of strings. "
                         "First, identify the nature of the conversation: Is it business-focused? Technical? Personal? "
                         "Educational? Customer support? Then summarize accordingly.\n\n"
                         "For BUSINESS conversations: Extract business insights, decisions, action items, pain points, "
@@ -118,10 +132,9 @@ class SummarizationService:
                         "technical, educational, or personal—summarize the key themes and takeaways in that context.\n\n"
                         "You DO NOT summarize gibberish, incoherent rambling, or unclear fragments. "
                         "If a transcript lacks coherent discussion (ANY topic), respond with: "
-                        '{"short":"No clear content captured","detailed":"The transcript did not contain coherent discussion","key_points":[]}. '
+                        f"{EMPTY_SUMMARY_JSON}. "
                         "For coherent transcripts: synthesize and paraphrase (do not copy lines verbatim). "
                         "Explain what happened, why it matters in context, and relevant next steps or conclusions.\n\n"
-                        "Return only valid JSON with short, detailed, and key_points fields. "
                         "short = 1-2 lines that give a clear overview of the whole situation: "
                         "who/what the conversation is about, the main issue or goal, and the current outcome or next step if clear. "
                         "detailed = 2-4 paragraphs covering purpose, key topics, decisions/conclusions, and outcomes. "
@@ -198,11 +211,11 @@ def _build_summary_prompt(transcript_text: str) -> str:
         "- For NON-BUSINESS conversations: Summarize the core themes, key discussion points, insights, and relevant conclusions in the conversation's actual context.\n"
         "- Capture only clear, coherent discussion. Ignore filler, false starts, side comments, and unclear fragments.\n"
         "- If the transcript is incoherent or lacks clear discussion (ANY topic), respond with "
-        "short='No clear content captured', detailed='The transcript did not contain coherent discussion', key_points=[].\n"
+        f"{EMPTY_SUMMARY_JSON}.\n"
         "- Do not invent details. Do not pad summaries with speculation.\n"
         "- Synthesize and paraphrase, don't copy transcript lines verbatim.\n"
         "- Explain who said what and why it matters in the context of the conversation.\n\n"
-        'Return JSON exactly like: {"short":"...","detailed":"...","key_points":["..."]}\n\n'
+        f"Return only one valid JSON object exactly like: {SUMMARY_JSON_EXAMPLE}\n\n"
         f"Transcript:\n{transcript_text}"
     )
 
@@ -218,8 +231,8 @@ def _build_chunk_summary_prompt(chunk: str, index: int, total: int) -> str:
         "- For NON-BUSINESS sections: Capture the relevant themes, insights, or conclusions for that type of discussion.\n"
         "- Write analytical notes, not transcript copies.\n"
         "- Skip filler, unclear rambling, or incoherent fragments. Focus only on clear, coherent discussion.\n"
-        "- If this chunk is incoherent or contains no clear content, respond with short='No clear content', detailed='No coherent discussion', key_points=[].\n"
-        'Return JSON exactly like: {"short":"...","detailed":"...","key_points":["..."]}\n\n'
+        f"- If this chunk is incoherent or contains no clear content, respond with {EMPTY_SUMMARY_JSON}.\n"
+        f"Return only one valid JSON object exactly like: {SUMMARY_JSON_EXAMPLE}\n\n"
         f"Transcript chunk:\n{chunk}"
     )
 
@@ -238,7 +251,7 @@ def _build_final_summary_prompt(partial_summaries: list[Summary]) -> str:
         "Create the final comprehensive summary for the entire transcript from these chunk summaries.\n\n"
         "First, identify the overall nature of the conversation: Is it business-focused? Technical? Personal? Educational? Support? Or other?\n\n"
         "Then synthesize accordingly:\n"
-        "1. If most chunks contain 'No clear content' or 'No coherent discussion', respond with short='No clear content captured', detailed='The transcript did not contain coherent discussion', key_points=[].\n"
+        f"1. If most chunks contain 'No clear content' or 'No coherent discussion', respond with {EMPTY_SUMMARY_JSON}.\n"
         "2. Otherwise, merge chunk summaries into a cohesive narrative:\n"
         "   - short must be 1-2 lines giving the overall situation across the whole transcript, including the main issue/goal and outcome or next step if clear.\n"
         "   - Describe what happened across the full conversation (not just list chunks).\n"
@@ -247,7 +260,7 @@ def _build_final_summary_prompt(partial_summaries: list[Summary]) -> str:
         "   - For NON-BUSINESS: Highlight core themes, key insights, conclusions, or relevant next steps in that context.\n"
         "   - Do not invent connections not supported by the chunks.\n"
         "   - The summary should read professionally and make sense for the conversation's actual purpose.\n\n"
-        'Return JSON exactly like: {"short":"...","detailed":"...","key_points":["..."]}\n\n'
+        f"Return only one valid JSON object exactly like: {SUMMARY_JSON_EXAMPLE}\n\n"
         f"Chunk summaries:\n{summaries}"
     )
 
@@ -295,9 +308,12 @@ def _parse_summary_json(content: str) -> Summary | None:
         except json.JSONDecodeError:
             return None
 
-    short = _clean_summary_text(str(payload.get("short", "")))
-    detailed = _clean_summary_text(str(payload.get("detailed", "")))
-    key_points = payload.get("key_points", [])
+    if not isinstance(payload, dict):
+        return None
+
+    short = _clean_summary_text(str(_first_present(payload, "short", "summary", "brief", "overview")))
+    detailed = _clean_summary_text(str(_first_present(payload, "detailed", "details", "detail", "full_summary")))
+    key_points = _first_present(payload, "key_points", "keyPoints", "points", "takeaways", default=[])
     if not isinstance(key_points, list):
         key_points = []
 
@@ -314,6 +330,14 @@ def _parse_summary_json(content: str) -> Summary | None:
         detailed=detailed,
         key_points=_dedupe_items(cleaned_points)[:MAX_KEY_POINTS],
     )
+
+
+def _first_present(payload: dict, *keys: str, default: object = "") -> object:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    return default
 
 
 def _transcript_plain_text(transcript: list[TranscriptSegment]) -> str:

@@ -140,7 +140,6 @@ class TranscriptionService:
             )
             with urlopen(upload_request, timeout=30) as response:
                 upload_result = json.loads(response.read())
-                print(f"  → Upload response: {upload_result}")
                 audio_url = upload_result.get("upload_url")
                 if not audio_url:
                     raise AppError(
@@ -176,7 +175,6 @@ class TranscriptionService:
             transcript_data["language_code"] = self.settings.transcription_language
         
         try:
-            print(f"  → Requesting transcription with payload: {transcript_data}")
             transcript_request = Request(
                 transcript_url,
                 data=json.dumps(transcript_data).encode(),
@@ -188,7 +186,6 @@ class TranscriptionService:
             )
             with urlopen(transcript_request, timeout=30) as response:
                 transcript_response = json.loads(response.read())
-                print(f"  → Transcript response: {transcript_response}")
                 transcript_id = transcript_response.get("id")
                 if not transcript_id:
                     raise AppError(
@@ -259,7 +256,8 @@ class TranscriptionService:
                                     speaker=_format_speaker_label(word.get('speaker')) if word.get('speaker') is not None else None,
                                 )
                                 for word in words
-                            )
+                            ),
+                            default_speaker="Speaker 1",
                         )
                     elif status == "error":
                         error = poll_response.get("error", "Unknown error")
@@ -268,7 +266,7 @@ class TranscriptionService:
                             code="assemblyai_transcription_failed",
                         )
                     else:
-                        print(f"  → Status: {status}... waiting...")
+                        pass
             except HTTPError as exc:
                 raise AppError(
                     f"AssemblyAI poll failed: {_format_http_error(exc)}",
@@ -339,7 +337,8 @@ class TranscriptionService:
                     text=str(segment.text or ""),
                 )
                 for segment in segments
-            )
+            ),
+            default_speaker=None,
         )
 
     def _transcribe_with_openai_whisper(
@@ -387,16 +386,19 @@ class TranscriptionService:
                     text=str(segment.get("text", "")),
                 )
                 for segment in result.get("segments", [])
-            )
+            ),
+            default_speaker=None,
         )
 
     def _build_segments(
         self,
         raw_segments: Iterable["RawTranscriptSegment"],
+        *,
+        default_speaker: str | None,
     ) -> list[TranscriptSegment]:
         normalized_segments = [
             NormalizedTranscriptSegment(
-                speaker=segment.speaker or "Speaker 1",  # Use AssemblyAI speaker label if available
+                speaker=segment.speaker or default_speaker or "",
                 start=max(0.0, segment.start),
                 end=max(segment.start, segment.end),
                 text=cleaned_text,

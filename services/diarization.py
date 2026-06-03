@@ -1,7 +1,6 @@
 import asyncio
 from dataclasses import dataclass
 import logging
-import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -68,7 +67,8 @@ class SpeakerDiarizationService:
         if not transcript:
             return []
 
-        # Check for existing speaker labels from Assembly AI transcription
+        # Reuse speaker labels only when the transcription source provided them.
+        # Local transcription leaves speaker blank so pyannote/heuristic can assign labels here.
         unique_speakers = {segment.speaker for segment in transcript if segment.speaker.strip()}
         has_any_speakers = len(unique_speakers) > 0
         
@@ -86,7 +86,7 @@ class SpeakerDiarizationService:
             print("✅ [DIARIZATION] Reused existing speaker labels from AssemblyAI successfully.")
             return _renumber_segments(_merge_consecutive_speaker_segments(transcript))
 
-        # Only try pyannote if Assembly AI found NO speakers (API failure or no speech)
+        # Try pyannote only when the transcript does not already contain speaker labels.
         engine = self.settings.diarization_engine.strip().lower()
         if engine == "pyannote" and audio_path is not None:
             print(f"🔊 [DIARIZATION] Attempting Pyannote diarization ({self.settings.diarization_model})...")
@@ -94,7 +94,7 @@ class SpeakerDiarizationService:
                 provider="Hugging Face",
                 model=self.settings.diarization_model,
                 purpose="speaker diarization",
-                details=f"segments={len(transcript)} (fallback from Assembly AI failure)",
+                details=f"segments={len(transcript)} no_transcript_speaker_labels=True",
             )
             diarized = await self._try_pyannote_diarization(transcript, audio_path)
             if diarized:
@@ -116,157 +116,10 @@ class SpeakerDiarizationService:
             provider="local",
             model="heuristic-turn-switching",
             purpose="speaker diarization",
-            details=f"segments={len(transcript)} (fallback from Assembly AI failure)",
+            mode="fallback",
+            details=f"segments={len(transcript)} no_transcript_speaker_labels=True pyannote_unavailable=True",
         )
         return self._heuristic_diarization(transcript)
-
-    async def _try_assemblyai_diarization(
-        self,
-        transcript: list[TranscriptSegment],
-        audio_path: Path,
-    ) -> list[TranscriptSegment] | None:
-        try:
-            return await asyncio.to_thread(
-                self._diarize_with_assemblyai,
-                transcript,
-                audio_path,
-            )
-        except Exception as exc:
-            # Log the error but return None to fall back to other methods
-            print(f"    Error during AssemblyAI diarization: {exc}")
-            return None
-
-    def _diarize_with_assemblyai(
-        self,
-        transcript: list[TranscriptSegment],
-        audio_path: Path,
-    ) -> list[TranscriptSegment] | None:
-        """Diarize audio using AssemblyAI cloud API."""
-        import json
-        import time
-        from urllib.request import Request, urlopen
-        from urllib.error import HTTPError, URLError
-
-        try:
-            with open(audio_path, "rb") as audio_file:
-                audio_data = audio_file.read()
-        except IOError as exc:
-            raise AppError(
-                f"Failed to read audio file: {exc}",
-                code="audio_read_error",
-            ) from exc
-
-        # Upload audio to AssemblyAI
-        upload_url = "https://api.assemblyai.com/v2/upload"
-        headers = {
-            "Authorization": self.settings.assemblyai_api_key,
-        }
-        
-        try:
-            print(f"    → Uploading audio file ({len(audio_data) / 1024 / 1024:.1f}MB)...")
-            upload_request = Request(
-                upload_url,
-                data=audio_data,
-                headers=headers,
-                method="POST",
-            )
-            with urlopen(upload_request, timeout=30) as response:
-                upload_result = json.loads(response.read())
-                audio_url = upload_result.get("upload_url")
-                if not audio_url:
-                    raise AppError(f"AssemblyAI upload failed: no upload_url in response")
-        except (HTTPError, URLError, json.JSONDecodeError) as exc:
-            raise AppError(f"AssemblyAI upload failed: {exc}") from exc
-
-        # Request diarization with speaker labels
-        transcript_url = "https://api.assemblyai.com/v2/transcript"
-        transcript_data = {
-            "audio_url": audio_url,
-            "speaker_labels": True,  # Enable speaker diarization
-        }
-        
-        try:
-            print(f"    → Requesting diarization...")
-            transcript_request = Request(
-                transcript_url,
-                data=json.dumps(transcript_data).encode(),
-                headers={
-                    **headers,
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            with urlopen(transcript_request, timeout=30) as response:
-                transcript_response = json.loads(response.read())
-                transcript_id = transcript_response.get("id")
-                if not transcript_id:
-                    raise AppError(f"AssemblyAI request failed: no ID in response")
-        except (HTTPError, URLError, json.JSONDecodeError) as exc:
-            raise AppError(f"AssemblyAI request failed: {exc}") from exc
-
-        # Poll for completion
-        max_wait = 300  # 5 minutes timeout
-        start_time = time.time()
-        
-        while time.time() - start_time < max_wait:
-            try:
-                poll_request = Request(
-                    f"{transcript_url}/{transcript_id}",
-                    headers=headers,
-                    method="GET",
-                )
-                with urlopen(poll_request, timeout=30) as response:
-                    poll_response = json.loads(response.read())
-                    status = poll_response.get("status")
-                    
-                    if status == "completed":
-                        words = poll_response.get("words", [])
-                        if not words:
-                            print("    Warning: AssemblyAI returned empty transcript")
-                            return None
-                        
-                        # Extract speaker information from words
-                        has_speakers = any(word.get("speaker") is not None for word in words)
-                        if not has_speakers:
-                            print("    Warning: AssemblyAI did not detect multiple speakers")
-                            return None
-                        
-                        print(f"    → Diarization complete: {len(words)} words detected")
-                        
-                        log_model_usage(
-                            provider="AssemblyAI",
-                            model="default",
-                            purpose="speaker diarization",
-                            details=f"words={len(words)} has_speaker_labels={has_speakers}",
-                        )
-                        
-                        # Build diarization from speaker labels
-                        turns = _normalize_assemblyai_speakers(words)
-                        if not turns:
-                            print("    Warning: Could not extract speaker turns from AssemblyAI")
-                            return None
-                        
-                        speaker_names = _speaker_name_map(turns)
-                        diarized_segments = [
-                            _copy_segment(
-                                segment,
-                                speaker=_best_speaker_for_segment(segment, turns, speaker_names),
-                            )
-                            for segment in transcript
-                        ]
-                        return _renumber_segments(_merge_consecutive_speaker_segments(diarized_segments))
-                        
-                    elif status == "error":
-                        error = poll_response.get("error", "Unknown error")
-                        raise AppError(f"AssemblyAI diarization error: {error}")
-                    else:
-                        print(f"    → Status: {status}... waiting...")
-            except (HTTPError, URLError, json.JSONDecodeError) as exc:
-                raise AppError(f"AssemblyAI poll failed: {exc}") from exc
-            
-            time.sleep(2)  # Wait 2 seconds before next poll
-        
-        raise AppError("AssemblyAI diarization timeout")
 
     async def _try_pyannote_diarization(
         self,
@@ -303,7 +156,7 @@ class SpeakerDiarizationService:
             from pyannote.audio import Pipeline
         except ImportError as exc:
             raise AppError(
-                "Install pyannote.audio from requirements-diarization.txt to enable speaker diarization.",
+                "Install dependencies from requirements.txt to enable pyannote speaker diarization.",
                 code="diarization_dependency_missing",
             ) from exc
 
@@ -373,77 +226,6 @@ class DiarizationTurn:
     source_speaker: str
 
 
-def _normalize_assemblyai_speakers(words: list[dict]) -> list[DiarizationTurn]:
-    """Convert AssemblyAI word-level speaker data into speaker turns.
-    
-    Handles both numeric (0, 1, 2) and alphabetic (A, B, C) speaker labels.
-    Uses speaker indices directly for mapping.
-    """
-    turns: list[DiarizationTurn] = []
-    current_speaker_idx: str | None = None
-    turn_start: float | None = None
-
-    for word in words:
-        speaker = word.get("speaker")
-        if speaker is None:
-            continue
-        
-        # Convert alphabetic label (A, B, C) to numeric (0, 1, 2) for consistency
-        speaker_idx = _convert_speaker_label_to_index(speaker)
-        
-        start_ms = word.get("start", 0)
-        end_ms = word.get("end", 0)
-        start_seconds = float(start_ms / 1000) if start_ms else 0.0
-        end_seconds = float(end_ms / 1000) if end_ms else start_seconds
-        
-        # If speaker changed, save the previous turn
-        if speaker_idx != current_speaker_idx:
-            if current_speaker_idx is not None and turn_start is not None:
-                # Find the end time of the last word with current_speaker_idx
-                last_end = turn_start
-                for w in words:
-                    w_speaker = w.get("speaker")
-                    if w_speaker is not None:
-                        w_speaker_idx = _convert_speaker_label_to_index(w_speaker)
-                        if w_speaker_idx == current_speaker_idx:
-                            w_end_ms = w.get("end", 0)
-                            w_end_seconds = float(w_end_ms / 1000) if w_end_ms else 0.0
-                            last_end = w_end_seconds
-                
-                turns.append(
-                    DiarizationTurn(
-                        start=turn_start,
-                        end=last_end,
-                        source_speaker=str(current_speaker_idx),
-                    )
-                )
-            
-            current_speaker_idx = speaker_idx
-            turn_start = start_seconds
-
-    # Add the final turn
-    if current_speaker_idx is not None and turn_start is not None:
-        last_end = turn_start
-        for w in words:
-            w_speaker = w.get("speaker")
-            if w_speaker is not None:
-                w_speaker_idx = _convert_speaker_label_to_index(w_speaker)
-                if w_speaker_idx == current_speaker_idx:
-                    w_end_ms = w.get("end", 0)
-                    w_end_seconds = float(w_end_ms / 1000) if w_end_ms else 0.0
-                    last_end = w_end_seconds
-        
-        turns.append(
-            DiarizationTurn(
-                start=turn_start,
-                end=last_end,
-                source_speaker=str(current_speaker_idx),
-            )
-        )
-    
-    return sorted(turns, key=lambda item: (item.start, item.end))
-
-
 def _normalize_pyannote_turns(diarization: object) -> list[DiarizationTurn]:
     turns: list[DiarizationTurn] = []
     for turn, _track, speaker in diarization.itertracks(yield_label=True):
@@ -461,7 +243,7 @@ def _speaker_name_map(turns: list[DiarizationTurn]) -> dict[str, str]:
     """Map speaker IDs to speaker names, starting from Speaker 1.
     
     Always uses sequential naming based on appearance order: Speaker 1, Speaker 2, Speaker 3, etc.
-    Works for both AssemblyAI (numeric) and pyannote (non-numeric) speaker IDs.
+    Works for pyannote and other diarization turn labels.
     """
     names: dict[str, str] = {}
     for turn in turns:
@@ -536,12 +318,6 @@ def _looks_like_speaker_turn(
         return True
 
     return previous_text.endswith((".", "!", ":"))
-
-
-def _has_meaningful_speaker_labels(transcript: list[TranscriptSegment]) -> bool:
-    """Check if transcript has meaningful speaker labels (more than one unique speaker)."""
-    speakers = {segment.speaker for segment in transcript if segment.speaker.strip()}
-    return len(speakers) > 1
 
 
 def _copy_segment(segment: TranscriptSegment, speaker: str) -> TranscriptSegment:
@@ -627,27 +403,3 @@ def _renumber_segments(
             )
         )
     return renumbered
-
-
-def _convert_speaker_label_to_index(speaker: str | int) -> str:
-    """Convert AssemblyAI speaker label to numeric index string.
-    
-    Handles both numeric (0, 1, 2) and alphabetic (A, B, C) labels.
-    Returns numeric index as string for consistent comparison.
-    """
-    speaker_str = str(speaker).strip().upper()
-    
-    # If already numeric, return as-is
-    try:
-        int(speaker_str)
-        return speaker_str
-    except ValueError:
-        pass
-    
-    # Convert alphabetic label (A, B, C, etc.) to numeric (0, 1, 2, etc.)
-    if len(speaker_str) == 1 and speaker_str.isalpha():
-        speaker_idx = ord(speaker_str) - ord('A')
-        return str(speaker_idx)
-    
-    # Fallback: return as-is
-    return speaker_str

@@ -23,16 +23,10 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-Install core dependencies:
+Install dependencies:
 
 ```powershell
 python -m pip install -r requirements.txt
-```
-
-Install optional pyannote speaker diarization dependencies only if you want neural diarization:
-
-```powershell
-python -m pip install -r requirements-diarization.txt
 ```
 
 Create your local environment file:
@@ -63,7 +57,7 @@ http://<your-ip-address>:8000/api/health
 
 ## Required Dependencies
 
-Core dependencies are listed in `requirements.txt`:
+Dependencies are listed in `requirements.txt`:
 
 - `fastapi`: API framework.
 - `uvicorn[standard]`: ASGI server.
@@ -74,11 +68,10 @@ Core dependencies are listed in `requirements.txt`:
 - `certifi`: CA certificate bundle for MongoDB Atlas TLS.
 - `faiss-cpu`: local vector search for transcript Q&A.
 - `sentence-transformers`: local embedding model support for semantic retrieval.
-
-Optional diarization dependencies are listed in `requirements-diarization.txt`:
-
 - `torch` and `torchaudio`: model runtime for pyannote.
 - `pyannote.audio`: neural speaker diarization.
+
+Pyannote is only used when a Hugging Face token is configured. Without that token, the app falls back to heuristic diarization.
 
 FFmpeg is recommended for audio conversion and normalization. If FFmpeg is not installed, `.wav` files can still be copied through preprocessing, but `.mp3` and `.m4a` preprocessing requires FFmpeg.
 

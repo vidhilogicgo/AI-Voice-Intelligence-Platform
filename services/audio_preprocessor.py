@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 import shutil
 import subprocess
@@ -34,7 +35,7 @@ class AudioPreprocessor:
         if ffmpeg_path is None:
             if input_path.suffix.lower() == ".wav":
                 try:
-                    shutil.copyfile(input_path, output_path)
+                    await asyncio.to_thread(shutil.copyfile, input_path, output_path)
                 except OSError as exc:
                     raise AppError(
                         "Audio preprocessing failed while copying the WAV file.",
@@ -64,11 +65,13 @@ class AudioPreprocessor:
         ]
 
         try:
-            completed = subprocess.run(
+            completed = await asyncio.to_thread(
+                subprocess.run,
                 command,
                 capture_output=True,
                 text=True,
                 check=False,
+                stdin=subprocess.DEVNULL,
             )
         except OSError as exc:
             raise AppError(
